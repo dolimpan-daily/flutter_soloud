@@ -5,7 +5,6 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_soloud/src/audio_source.dart';
-import 'package:flutter_soloud/src/bindings/audio_data.dart';
 import 'package:flutter_soloud/src/bindings/bindings_player.dart';
 import 'package:flutter_soloud/src/bindings/soloud_controller.dart';
 import 'package:flutter_soloud/src/enums.dart';
@@ -245,6 +244,8 @@ interface class SoLoud {
   /// latency, but at the same time, the smaller the buffer, the more likely the
   /// system hits buffer underruns (ie, the play head marches on but there's no
   /// data ready to be played) and the sound breaks down horribly.
+  /// The default value is 2048.
+  ///
   /// [channels] mono, stereo, quad, 5.1, 7.1.
   Future<void> init({
     PlaybackDevice? device,
@@ -718,6 +719,29 @@ interface class SoLoud {
     return newSound;
   }
 
+  /// Resets the buffer of the data stream.
+  ///
+  /// It happens that when playing a stream, maybe from the web, it is needed
+  /// to change it to another source. The player continues to play the already
+  /// added audio data to the buffer. This method can be used to reset the
+  /// buffer and start with the new audio data.
+  ///
+  /// [hash] the hash of the stream sound.
+  ///
+  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
+  /// Throws [SoLoudSoundHashNotFoundDartException] if the [sound] is not found.
+  void resetBufferStream(AudioSource sound) {
+    if (!isInitialized) {
+      throw const SoLoudNotInitializedException();
+    }
+    final e = SoLoudController().soLoudFFI.resetBufferStream(sound.soundHash);
+
+    if (e != PlayerErrors.noError) {
+      _logPlayerError(e, from: 'resetBufferStream() result');
+      throw SoLoudCppException.fromPlayerError(e);
+    }
+  }
+
   /// Add PCM audio data to the stream.
   ///
   /// This method can be called within an `Isolate` making it possible
@@ -1066,6 +1090,13 @@ interface class SoLoud {
   ///
   /// Returns the [SoundHandle] of the new sound instance.
   ///
+  /// **NOTE**: by default, the maximum number of sounds you can play is 16 and
+  /// it can be changed with [setMaxActiveVoiceCount]. If this limit is reached
+  /// and other instances of the same sound are played, the oldest one will be
+  /// stopped to make room to play the new sound. If there are no instances of
+  /// the sound and the max limit is reached, a warning will be printed and the
+  /// sound will not play.
+  ///
   /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
   /// Throws [SoLoudBufferStreamCanBePlayedOnlyOnceCppException] if we try to
   /// play a BufferStream using `release` buffer type more than once.
@@ -1091,7 +1122,8 @@ interface class SoLoud {
       loopingStartAt: loopingStartAt,
     );
     _logPlayerError(ret.error, from: 'play()');
-    if (ret.error != PlayerErrors.noError) {
+    if (!(ret.error == PlayerErrors.noError ||
+        ret.error == PlayerErrors.maxActiveVoiceCountReached)) {
       throw SoLoudCppException.fromPlayerError(ret.error);
     }
 
@@ -1558,6 +1590,14 @@ interface class SoLoud {
   }
 
   /// Returns the number of concurrent sounds that are playing at the moment.
+  ///
+  /// See also:
+  ///
+  ///  *  [getMaxActiveVoiceCount] gets the current maximum active voice count.
+  ///  *  [setMaxActiveVoiceCount] sets the current maximum active voice count.
+  ///  *  [getVoiceCount] the number of voices currently playing.
+  ///  *  [countAudioSource] number of concurrent sounds that are playing a
+  /// specific audio source.
   int getActiveVoiceCount() {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
@@ -1567,6 +1607,14 @@ interface class SoLoud {
 
   /// Returns the number of concurrent sounds that are playing a
   /// specific audio source.
+  ///
+  /// See also:
+  ///
+  ///  *  [getMaxActiveVoiceCount] gets the current maximum active voice count.
+  ///  *  [setMaxActiveVoiceCount] sets the current maximum active voice count.
+  ///  *  [getActiveVoiceCount] concurrent sounds that are playing.
+  ///  *  [getVoiceCount] the number of voices currently playing.
+  /// specific audio source.
   int countAudioSource(AudioSource audioSource) {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
@@ -1575,6 +1623,14 @@ interface class SoLoud {
   }
 
   /// Returns the number of voices the application has told SoLoud to play.
+  ///
+  /// See also:
+  ///
+  ///  *  [getMaxActiveVoiceCount] gets the current maximum active voice count.
+  ///  *  [setMaxActiveVoiceCount] sets the current maximum active voice count.
+  ///  *  [getActiveVoiceCount] concurrent sounds that are playing.
+  ///  *  [countAudioSource] number of concurrent sounds that are playing a
+  /// specific audio source.
   int getVoiceCount() {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
@@ -1668,6 +1724,14 @@ interface class SoLoud {
   }
 
   /// Gets the current maximum active voice count.
+  ///
+  /// See also:
+  ///
+  ///  *  [setMaxActiveVoiceCount] sets the current maximum active voice count.
+  ///  *  [getActiveVoiceCount] concurrent sounds that are playing.
+  ///  *  [getVoiceCount] the number of voices currently playing.
+  ///  *  [countAudioSource] number of concurrent sounds that are playing a
+  /// specific audio source.
   int getMaxActiveVoiceCount() {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
@@ -1683,53 +1747,25 @@ interface class SoLoud {
   /// NOTE: The number of concurrent voices is limited, as having unlimited
   /// voices would cause performance issues, and could lead unnecessary
   /// clipping. The default number of maximum concurrent voices is 16,
-  /// but this can be adjusted at runtime.
+  /// but this can be adjusted at runtime using [setMaxActiveVoiceCount].
   ///
   /// The hard maximum count is 4095, but if more are
   /// required, SoLoud can be modified to support more. But seriously, if you
   /// need more than 4095 sounds playing _at once_,
   /// you're probably going to need some serious changes anyway.
+  ///
+  /// See also:
+  ///
+  ///  *  [getMaxActiveVoiceCount] gets the current maximum active voice count.
+  ///  *  [getActiveVoiceCount] concurrent sounds that are playing.
+  ///  *  [getVoiceCount] the number of voices currently playing.
+  ///  *  [countAudioSource] number of concurrent sounds that are playing a
+  /// specific audio source.
   void setMaxActiveVoiceCount(int maxVoiceCount) {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
     }
     _controller.soLoudFFI.setMaxActiveVoiceCount(maxVoiceCount);
-  }
-
-  /// Return a floats matrix of 256x512.
-  /// Every row are composed of 256 FFT values plus 256 of wave data.
-  /// Every time is called, a new row is stored in the
-  /// first row and all the previous rows are shifted up. The last
-  /// one will be lost.
-  ///
-  /// [audioData] this is the list where data is stored. It can be read like
-  /// any other list. For example the first row can be read like this:
-  /// `audioData[0...255]` this range represents FFT values for the first row
-  /// `audioData[256...512]` this range represents wave data for the first row
-  /// multiply the index by the row number you want to query.
-  ///
-  /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
-  /// Throws [SoLoudVisualizationNotEnabledException] if the visualization
-  /// flag is not enableb. Please, Use `setVisualizationEnabled(true)`
-  /// when needed.
-  /// Throws [SoLoudNullPointerException] something is going wrong with the
-  /// player engine. Please, open an issue on
-  /// [GitHub](https://github.com/alnitak/flutter_soloud/issues) providing
-  /// a simple working example.
-  @experimental
-  @Deprecated('Please use AudioData class instead.')
-  void getAudioTexture2D(AudioData audioData) {
-    if (!isInitialized) {
-      throw const SoLoudNotInitializedException();
-    }
-    if (!_isVisualizationEnabled) {
-      throw const SoLoudVisualizationNotEnabledException();
-    }
-    final error = _controller.soLoudFFI.getAudioTexture2D(audioData);
-    _logPlayerError(error, from: 'getAudioTexture2D() result');
-    if (error != PlayerErrors.noError) {
-      throw SoLoudCppException.fromPlayerError(error);
-    }
   }
 
   /// Smooth FFT data.
@@ -1744,7 +1780,6 @@ interface class SoLoud {
   /// newFreq = smooth * oldFreq + (1 - smooth) * newFreq
   ///
   /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
-  @experimental
   void setFftSmoothing(double smooth) {
     if (!isInitialized) {
       throw const SoLoudNotInitializedException();
@@ -2211,6 +2246,13 @@ interface class SoLoud {
   ///
   /// Returns the [SoundHandle] of this new sound.
   ///
+  /// **NOTE**: by default, the maximum number of sounds you can play is 16 and
+  /// it can be changed with [setMaxActiveVoiceCount]. If this limit is reached
+  /// and other instances of the same sound are played, the oldest one will be
+  /// stopped to make room to play the new sound. If there are no instances of
+  /// the sound and the max limit is reached, a warning will be printed and the
+  /// sound will not play.
+  ///
   /// Throws [SoLoudNotInitializedException] if the engine is not initialized.
   /// Throws [SoLoudBufferStreamCanBePlayedOnlyOnceCppException] if we try to
   /// play a BufferStream using `release` buffer type more than once.
@@ -2246,7 +2288,8 @@ interface class SoLoud {
     );
 
     _logPlayerError(ret.error, from: 'play3d()');
-    if (ret.error != PlayerErrors.noError) {
+    if (!(ret.error == PlayerErrors.noError ||
+        ret.error == PlayerErrors.maxActiveVoiceCountReached)) {
       throw SoLoudCppException.fromPlayerError(ret.error);
     }
 
@@ -2379,6 +2422,7 @@ interface class SoLoud {
   }
 
   /// Sets the doppler factor of a live 3D audio source.
+  /// 0 = disable, 1 = normal, >1 = exaggerated
   void set3dSourceDopplerFactor(SoundHandle handle, double dopplerFactor) {
     _controller.soLoudFFI.set3dSourceDopplerFactor(handle, dopplerFactor);
   }
